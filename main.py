@@ -551,19 +551,19 @@ def covered_call_backtest_strike_expiry_aware(prices_df: pd.DataFrame, cfg: CCCo
                 cash -= (abs(sell_total) * cfg.option_slippage_pct + abs(opt_short) * cfg.option_fee_per_contract)
 
         if opt_short != 0 and opt_expiry is not None and dt >= opt_expiry:
-            intrinsic = max(0.0, S - opt_strike)
-            settlement = abs(opt_short) * intrinsic * cfg.shares_per_contract
+            contracts = abs(int(opt_short))
+            shares_per = cfg.shares_per_contract
+            shares_to_deliver = min(shares, contracts * shares_per)
 
-            if intrinsic > 0 and shares > 0:
-                shares_to_deliver = abs(opt_short) * cfg.shares_per_contract
-                shares_to_deliver = min(shares_to_deliver, shares)
+            if shares_to_deliver > 0 and S > opt_strike:
+                # Assigned: deliver shares at strike, receive strike proceeds
                 proceeds = shares_to_deliver * opt_strike
                 cash += proceeds
                 cash -= stock_trade_cost(proceeds)
                 shares -= shares_to_deliver
+                # No separate "settlement" cash payment (avoids double counting)
 
-            cash -= settlement
-
+            # Option expires worthless if OTM, or expires via assignment if ITM.
             opt_short = 0
             opt_strike = None
             opt_expiry = None
