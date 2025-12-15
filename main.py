@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from typing import Any
 import numpy as np
 import pandas as pd
@@ -843,9 +844,17 @@ def plot_results(results: Dict, prices_df: pd.DataFrame):
     ax5 = plt.subplot(3, 3, 5)
     rolling_window = 126
     if len(portfolio['return']) > rolling_window:
-        rolling_mean = portfolio['return'].rolling(rolling_window).mean()
-        rolling_std = portfolio['return'].rolling(rolling_window).std()
-        rolling_sharpe = rolling_mean / rolling_std * np.sqrt(252)
+        risk_free_rate = 0.02
+        rf_daily = (1.0 + risk_free_rate) ** (1.0 / 252) - 1.0
+
+        excess = portfolio['return'] - rf_daily
+
+        rolling_mean = excess.rolling(rolling_window).mean()
+        rolling_std = excess.rolling(rolling_window).std(ddof=1)
+
+        rolling_sharpe = (
+                rolling_mean / rolling_std * np.sqrt(252)
+        )
 
         ax5.plot(portfolio.index, rolling_sharpe, color='darkgreen', linewidth=2)
         ax5.axhline(rolling_sharpe.mean(), color='red', linestyle='--',
@@ -930,6 +939,104 @@ def plot_results(results: Dict, prices_df: pd.DataFrame):
     plt.tight_layout()
     plt.show()
 
+def plot_separate_equity_curves(
+    results: Dict,
+    prices_df: pd.DataFrame,
+    include_benchmark: bool = True,
+    benchmark_ticker: str = "SPY",
+    normalize_to_100: bool = False,
+    ncols: int = 2,
+):
+    """
+    Creates separate equity-curve visualizations for each strategy.
+    - If normalize_to_100=True, each curve is rebased to 100 at its first valid date.
+    - Also plots the combined portfolio and (optionally) a benchmark curve.
+    """
+    strategies: Dict[str, pd.DataFrame] = results["strategies"]
+    combined: pd.DataFrame = results["combined"]
+
+    def _rebase(s: pd.Series, base: float = 100.0) -> pd.Series:
+        s = s.dropna()
+        if s.empty:
+            return s
+        return base * (s / s.iloc[0])
+
+    # --- 1) Individual strategy plots (one figure per strategy) ---
+    for strat_name, strat_df in strategies.items():
+        if not isinstance(strat_df, pd.DataFrame) or "equity" not in strat_df.columns:
+            continue
+
+        eq = strat_df["equity"].copy()
+        if normalize_to_100:
+            eq_plot = _rebase(eq, 100.0)
+            ylab = "Equity (rebased to 100)"
+        else:
+            eq_plot = eq
+            ylab = "Equity ($)"
+
+        plt.figure(figsize=(12, 5))
+        plt.plot(eq_plot.index, eq_plot.values, linewidth=2, label=strat_name.replace("_", " ").title())
+        plt.title(f"Equity Curve — {strat_name.replace('_', ' ').title()}", fontsize=14, fontweight="bold")
+        plt.ylabel(ylab)
+        plt.xlabel("Date")
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+
+    # --- 2) Optional: combined portfolio + strategies as small multiples (grid) ---
+    # (handy if you want everything on one screen too)
+    names = [k for k, v in strategies.items() if isinstance(v, pd.DataFrame) and "equity" in v.columns]
+    if names:
+        nrows = math.ceil(len(names) / max(1, ncols))
+        fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(14, 3.8 * nrows))
+        axes = np.array(axes).reshape(-1)
+
+        for ax_i, strat_name in enumerate(names):
+            ax = axes[ax_i]
+            eq = strategies[strat_name]["equity"].copy()
+            eq_plot = _rebase(eq, 100.0) if normalize_to_100 else eq
+
+            ax.plot(eq_plot.index, eq_plot.values, linewidth=1.8)
+            ax.set_title(strat_name.replace("_", " ").title(), fontsize=12, fontweight="bold")
+            ax.grid(True, alpha=0.3)
+
+        # turn off any unused axes
+        for j in range(len(names), len(axes)):
+            axes[j].axis("off")
+
+        fig.suptitle(
+            "Strategy Equity Curves" + (" (Rebased to 100)" if normalize_to_100 else ""),
+            fontsize=14,
+            fontweight="bold",
+            y=1.02,
+        )
+        plt.tight_layout()
+        plt.show()
+
+    # --- 3) Combined portfolio plot (plus optional benchmark) ---
+    if "total" in combined.columns:
+        total = combined["total"].copy()
+        total_plot = _rebase(total, 100.0) if normalize_to_100 else total
+
+        plt.figure(figsize=(12, 5))
+        plt.plot(total_plot.index, total_plot.values, linewidth=2.5, label="Multi-Strategy Total")
+
+        if include_benchmark and benchmark_ticker in prices_df.columns:
+            bench_px = prices_df[benchmark_ticker].reindex(combined.index).dropna()
+            if not bench_px.empty:
+                bench_eq = (1.0 + bench_px.pct_change().fillna(0.0)).cumprod()
+                bench_eq = (bench_eq * 100.0) if normalize_to_100 else (bench_eq * float(total.iloc[0]))
+                plt.plot(bench_eq.index, bench_eq.values, linewidth=2.0, alpha=0.6, label=benchmark_ticker)
+
+        plt.title("Combined Portfolio Equity Curve", fontsize=14, fontweight="bold")
+        plt.ylabel("Equity (rebased to 100)" if normalize_to_100 else "Equity ($)")
+        plt.xlabel("Date")
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+
 
 def main():
     tickers = [
@@ -999,6 +1106,15 @@ def main():
         prices_df=prices_df,
         initial_capital=initial_capital,
         strategy_weights=strategy_weights
+    )
+
+    plot_separate_equity_curves(
+        results,
+        prices_df,
+        include_benchmark=True,
+        benchmark_ticker="SPY",
+        normalize_to_100=False,  # set True if you want comparability
+        ncols=2
     )
 
     benchmark_returns = None
